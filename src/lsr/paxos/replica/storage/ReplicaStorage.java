@@ -23,6 +23,12 @@ public interface ReplicaStorage {
     /** @see #getExecuteUB() */
     void incrementExecuteUB();
 
+    /** Instance number such that all lower are already unpacked form batch */
+    int getUnpackUB();
+    
+    /** @see #getUnpackUB() */
+    void incrementUnpackUB();
+    
     /** Decided instances wait here for execution */
     void addDecidedWaitingExecution(Integer instanceId, ConsensusInstance ci);
 

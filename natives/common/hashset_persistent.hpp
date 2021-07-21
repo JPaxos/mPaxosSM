@@ -10,10 +10,29 @@
 #include <libpmemobj++/make_persistent.hpp>
 #include <libpmemobj++/make_persistent_array.hpp>
 
-template <typename E, class Hash = std::hash<E>, class Compare = std::equal_to<E>>
+
+/**
+ * This is a simple hash set with constant bucket size and place for an entry 
+ * in each bucket head.
+ * 
+ * WARNING: if synchronized is true, then it is compulsory to call resetLock on
+ *          opening an existing memory pool
+ **/
+template <typename E, bool synchronized = false, class Hash = std::hash<E>, class Compare = std::equal_to<E>>
 class hashset_persistent{
-    static Compare _compare;
-    static Hash    _hash;
+    Compare _compare;
+    Hash    _hash;
+    
+    // // // // // // // // // //
+    template<typename T, bool exists = false>
+    struct templateDependantField {};
+    template<typename T>
+    struct templateDependantField<T, true> {
+        T t;
+        template<typename ... Args> templateDependantField(Args... args) : t(std::forward(args)...){}
+    };
+    mutable templateDependantField<std::shared_mutex,synchronized> _mutex;
+    // // // // // // // // // //
     
     struct NonHead {
         NonHead() = default;
@@ -36,21 +55,38 @@ class hashset_persistent{
     
 public:
     hashset_persistent(pmem::obj::pool_base & pop, int bucketCount) : _bucketCount(bucketCount) {
-        pmem::obj::transaction::run(pop, [&]{
-            _buckets = pmem::obj::make_persistent<Head[]>(bucketCount);
-        });
+        pmem::obj::transaction::automatic tx(pop);
+        _buckets = pmem::obj::make_persistent<Head[]>(bucketCount);
+    }
+    
+    template<typename = std::enable_if<synchronized>>
+    void resetLock(){
+        new (&_mutex.t) std::shared_mutex();
+    }
+    
+    template<typename = std::enable_if<synchronized>>
+    std::unique_lock<std::shared_mutex> lockUnique(){
+        return std::unique_lock<std::shared_mutex>(_mutex.t);
+    }
+
+    template<typename = std::enable_if<synchronized>>
+    std::shared_lock<std::shared_mutex> lockShared() const {
+        return std::shared_lock<std::shared_mutex>(_mutex.t);
     }
     
     bool add(pmem::obj::pool_base & pop, const E & element) {
         Head * bucketHead = getBucketHeadFor(element);
         
+        std::unique_lock<std::shared_mutex> lock;
+        if constexpr (synchronized)
+            lock = std::unique_lock(_mutex.t);
+        
         // empty head
         if(!bucketHead->valid){
-            pmem::obj::transaction::run(pop, [&]{
-                bucketHead->element = element;
-                bucketHead->valid = true;
-                _elementCount++;
-            });
+            pmem::obj::transaction::automatic tx(pop);
+            bucketHead->element = element;
+            bucketHead->valid = true;
+            _elementCount++;
             assert(bucketHead->next == nullptr);
             return true;
         }
@@ -68,16 +104,19 @@ public:
         }
         
         // append to tail
-        pmem::obj::transaction::run(pop, [&]{
-            curr->next = pmem::obj::make_persistent<NonHead>(element);
-            _elementCount++;
-        });
+        pmem::obj::transaction::automatic tx(pop);
+        curr->next = pmem::obj::make_persistent<NonHead>(element);
+        _elementCount++;
         return true;
     }
         
     
     bool contains(const E & element) const {
         Head * bucketHead = getBucketHeadFor(element);
+        
+        std::shared_lock<std::shared_mutex> lock;
+        if constexpr (synchronized)
+            lock = std::shared_lock(_mutex.t);
         
         if(!bucketHead->valid){
             // no elements
@@ -100,23 +139,25 @@ public:
             return false;
         }
         
+        std::unique_lock<std::shared_mutex> lock;
+        if constexpr (synchronized)
+            lock = std::unique_lock(_mutex.t);
+        
         // remove from head
         if(_compare(bucketHead->element, element)){
             if(bucketHead->next == nullptr){
             // there is only one element 
-                pmem::obj::transaction::run(pop, [&]{
-                    bucketHead->valid = false;
-                    _elementCount--;
-                });
+                pmem::obj::transaction::automatic tx(pop);
+                bucketHead->valid = false;
+                _elementCount--;
             } else {
             // there are elements past the head;
-                pmem::obj::transaction::run(pop, [&]{
-                    auto old = bucketHead->next;
-                    bucketHead->element = old->element;
-                    bucketHead->next = old->next;
-                    pmem::obj::delete_persistent<NonHead>(old); 
-                    _elementCount--;
-                });
+                pmem::obj::transaction::automatic tx(pop);
+                auto old = bucketHead->next;
+                bucketHead->element = old->element;
+                bucketHead->next = old->next;
+                pmem::obj::delete_persistent<NonHead>(old); 
+                _elementCount--;
             }            
             return true;
         }
@@ -128,12 +169,11 @@ public:
             if(curr == nullptr)
                 return false;
             if(_compare(curr->element, element)){
-                pmem::obj::transaction::run(pop, [&]{
-                    auto currCopy = curr;
-                    prev->next = curr->next;
-                    pmem::obj::delete_persistent<NonHead>(currCopy); 
-                    _elementCount--;
-                });
+                pmem::obj::transaction::automatic tx(pop);
+                auto currCopy = curr;
+                prev->next = curr->next;
+                pmem::obj::delete_persistent<NonHead>(currCopy); 
+                _elementCount--;
                 return true;
             }
             prev = curr.get();
@@ -144,10 +184,10 @@ public:
     
 private:
     class Iterator {
-        friend class hashset_persistent<E, Hash, Compare>;
-        Iterator(const hashset_persistent<E, Hash, Compare> * thisSet) : thisSet(thisSet) {}
+        friend class hashset_persistent<E, synchronized, Hash, Compare>;
+        Iterator(const hashset_persistent<E, synchronized, Hash, Compare> * thisSet) : thisSet(thisSet) {}
         
-        const hashset_persistent<E, Hash, Compare> * thisSet;
+        const hashset_persistent<E, synchronized, Hash, Compare> * thisSet;
         
         int nextBucket = 0;
         NonHead * currentElement = nullptr;

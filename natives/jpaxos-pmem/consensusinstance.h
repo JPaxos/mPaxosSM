@@ -26,13 +26,13 @@ class ConsensusInstance{
     pmem::obj::p<LogEntryState> state  {UNKNOWN};
     pmem::obj::p<uint32_t> accepts     {0};
     pmem::obj::p<size_t> valueLength   {0};
-    pmem::obj::persistent_ptr<jbyte[]> value {nullptr};
+    pmem::obj::experimental::self_relative_ptr<jbyte[]> value {nullptr};
     
     bool isReadyToBeDecieded(){return state==KNOWN && isMajority();}
     
     void deleteValueUnchecked() {
         assert(valueLength!=0 && value!=nullptr);
-        pmem::obj::delete_persistent<jbyte[]>(value, valueLength);
+        blockReuser->push(value, valueLength);
         value = nullptr;
         valueLength = 0;
     }
@@ -80,9 +80,17 @@ public:
         }
     }
     
-    void freeMemory(){if(value) pmem::obj::delete_persistent<jbyte[]>(value, valueLength);};
+    void freeMemory(){if(value) blockReuser->push(value, valueLength);};
     
     void dump(FILE* out) const;
 };
+
+namespace pmem::detail
+{
+    template <>
+    struct can_do_snapshot<ConsensusInstance> {
+        static constexpr bool value = true;
+    };
+}
 
 #endif // CONSENSUSINSTANCE_H

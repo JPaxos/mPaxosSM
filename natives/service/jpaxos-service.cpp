@@ -108,6 +108,7 @@ std::string getSnapshotFile() {
 
 void releaseSnapshotFile() {
     *pop = pm::pool<root>::open(cfg.path.c_str(), std::string());
+    onEachPmemFileOpen();
 }
 
 void updateToSnapshot(JNIEnv * env, std::string filename){

@@ -4,6 +4,7 @@ import static lsr.common.ProcessDescriptor.processDescriptor;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.concurrent.ArrayBlockingQueue;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import lsr.common.ClientCommand;
 import lsr.common.ClientReply;
 import lsr.common.ClientReply.Result;
+import lsr.common.Pair;
 import lsr.common.nio.PacketHandler;
 import lsr.common.nio.ReaderAndWriter;
 import lsr.common.nio.SelectorThread;
@@ -56,6 +58,25 @@ public class NioClientProxy implements ClientProxy {
         this.readerAndWriter.setPacketHandler(new InitializePacketHandler());
     }
 
+    public static ArrayBlockingQueue<Pair<ReaderAndWriter, ClientReply>> responsesQueue;
+    public static Thread responseSenderScheduler;
+    static {
+        responsesQueue = new ArrayBlockingQueue<Pair<ReaderAndWriter, ClientReply>>(8192);
+        responseSenderScheduler = new Thread(() -> {
+            try {
+                while (true) {
+                    final Pair<ReaderAndWriter, ClientReply> pair = responsesQueue.take();
+                    pair.key().getSelectorThread().beginInvoke(() -> {
+                        pair.key().sendBuffer(pair.value().toByteBuffer());
+                    });
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }, "ResponseSenderScheduler");
+        responseSenderScheduler.start();
+    }
+
     /**
      * Sends the reply to client held by this proxy. This method has to be
      * called after client is initialized.
@@ -63,9 +84,16 @@ public class NioClientProxy implements ClientProxy {
      * @param clientReply - reply send to underlying client
      */
     public void send(final ClientReply clientReply) {
-        readerAndWriter.getSelectorThread().beginInvoke(() -> {
-            readerAndWriter.sendBuffer(clientReply.toByteBuffer());
-        });
+        try {
+            Pair<ReaderAndWriter, ClientReply> pair = new Pair<ReaderAndWriter, ClientReply>(
+                    readerAndWriter, clientReply);
+            if (!responsesQueue.offer(pair)) {
+                logger.warn("Replica blocked by NioClientProxy");
+                responsesQueue.put(pair);
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**

@@ -19,17 +19,25 @@ struct ClientReply {
     
     void freeValue() {
         if(value) {
-            delete_persistent<signed  char[]>(value, valueLength);
+            blockReuser->push(value, valueLength);
             value = nullptr;
         }
     }
 };
 
+namespace pmem::detail
+{
+    template <>
+    struct can_do_snapshot<ClientReply> {
+        static constexpr bool value = true;
+    };
+}
+
 class ReplicaStorage
 {
     pmem::obj::p<jint> executeUB {0};
     pmem::obj::p<jlong> serviceSeqNo {0};
-    hashset_persistent<jint> decidedWaitingExecution = hashset_persistent<jint>(*pop, 128);
+    hashset_persistent<jint, true> decidedWaitingExecution = hashset_persistent<jint, true>(*pop, 128);
     
     hashmap_persistent<jlong, ClientReply> lastReplyForClient = hashmap_persistent<jlong, ClientReply>(*pop, 2<<14 /* 16384 */);
     
@@ -40,6 +48,8 @@ class ReplicaStorage
     
 public:
     ReplicaStorage(){}
+    
+    void onPoolOpen(){decidedWaitingExecution.resetLock();}
     
     jint getExcuteUB() const {return executeUB;}
     void setExcuteUB(jint _executeUB) {executeUB=_executeUB; pop->persist(executeUB);}
@@ -58,17 +68,16 @@ public:
             if(iid < instanceId)
                 instancesToRemove.push_back(iid);
         }
-        pmem::obj::transaction::run(*pop,[&]{
-            for(auto iid: instancesToRemove)
-                decidedWaitingExecution.erase(*pop, iid);
-        });
+        pmem::obj::transaction::automatic tx(*pop);
+        for(auto iid: instancesToRemove)
+            decidedWaitingExecution.erase(*pop, iid);
     }
     size_t decidedWaitingExecutionCount() const {return decidedWaitingExecution.count();}
     
     /// called from within a transaction
-    void setLastReplyForClient(jlong clientId, jint clientSeqNo, persistent_ptr<signed char[]> value, size_t valueLength){
+    void setLastReplyForClient(jlong clientId, jint clientSeqNo, pmx::self_relative_ptr<signed char[]> value, size_t valueLength){
         std::unique_lock<std::shared_mutex> lock(lastReplyForClient_mutex);
-        ClientReply & reply = lastReplyForClient.get(*pop, clientId).get_rw();
+        ClientReply & reply = lastReplyForClient.get(*pop, clientId);
         reply.freeValue();
         
         reply.clientId    = clientId;
@@ -85,8 +94,8 @@ public:
     
     jint getLastReplySeqNoForClient(jlong clientId) const {
         std::shared_lock<std::shared_mutex> lock(lastReplyForClient_mutex);
-        auto reply = lastReplyForClient.get_if_exists(clientId);
-        return reply ? reply->get_ro().seqNo : -1;
+        const auto reply = lastReplyForClient.get_if_exists(clientId);
+        return reply ? reply->seqNo : -1;
     }
     
     jobject getLastReplyForClient(jlong clientId, JNIEnv * env) const;
@@ -99,24 +108,22 @@ public:
     }
     
     void dropAllLastRepliesForClients(){
-        pmem::obj::transaction::run(*pop,[&]{
-            std::unique_lock<std::shared_mutex> lock(lastReplyForClient_mutex);
-            for(auto p: lastReplyForClient)
-                p.second.get_rw().freeValue();
-            lastReplyForClient.clear(*pop);
-            lock.unlock();
-        });
+        pmem::obj::transaction::automatic tx(*pop);
+        std::unique_lock<std::shared_mutex> lock(lastReplyForClient_mutex);
+        for(auto p: lastReplyForClient)
+            p.second.freeValue();
+        lastReplyForClient.clear(*pop);
+        lock.unlock();
     }
     
     void setServiceSnapshotToRestore(std::vector<std::string> paths) {
-        pmem::obj::transaction::run(*pop,[&]{
-            for(const auto & path : paths){
-                auto len = path.length()+1;
-                pm::persistent_ptr<char[]> ppath = pm::make_persistent<char[]>(len);
-                memcpy(ppath.get(), path.c_str(), len);
-                serviceSnapshotToRestore.push_back(*pop, {ppath, len});
-            }
-        });
+        pmem::obj::transaction::automatic tx(*pop);
+        for(const auto & path : paths){
+            auto len = path.length()+1;
+            pm::persistent_ptr<char[]> ppath = pm::make_persistent<char[]>(len);
+            memcpy(ppath.get(), path.c_str(), len);
+            serviceSnapshotToRestore.push_back(ppath, len);
+        }
     }
     
     void armServiceSnapshotToRestore() {
@@ -125,15 +132,14 @@ public:
     }
     
     void removeServiceSnapshotToRestore(){
-        pmem::obj::transaction::run(*pop,[&]{
-            serviceSnapshotToRestore_armed = false;
-            for(const auto & p : serviceSnapshotToRestore){
-                const auto & [path, len] = p.get_ro();
-                unlink(path.get());
-                delete_persistent<char[]>(path, len);
-            }
-            serviceSnapshotToRestore.clear(*pop);
-        });
+        pmem::obj::transaction::automatic tx(*pop);
+        serviceSnapshotToRestore_armed = false;
+        for(const auto & p : serviceSnapshotToRestore){
+            const auto & [path, len] = p;
+            unlink(path.get());
+            delete_persistent<char[]>(path, len);
+        }
+        serviceSnapshotToRestore.clear();
     }
     
     std::vector<const char *> getServiceSnapshotToRestore() const {
@@ -141,7 +147,7 @@ public:
             return {};
         std::vector<const char *> result;
         for(const auto & p : serviceSnapshotToRestore)
-            result.emplace_back(p.get_ro().first.get());
+            result.emplace_back(p.first.get());
         return result;
     }
     

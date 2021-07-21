@@ -42,9 +42,19 @@ void ReplicaStorage::dump(FILE* out) const {
     fprintf(out, "Map of last replies:\n");
     std::shared_lock<std::shared_mutex> lock(lastReplyForClient_mutex);
     for(auto p : lastReplyForClient)
-        fprintf(out, "%ld:%d ", p.first, p.second.get_ro().seqNo);
+        fprintf(out, "%ld:%d ", p.first, p.second.seqNo);
     lock.unlock();
     fprintf(out, "\n");
+    
+    fprintf(out, "There are %zu service snapshot files to restore (%s)\n",
+                 serviceSnapshotToRestore.count(),
+                 serviceSnapshotToRestore_armed ? "ARMED" : "unarmed"
+           );
+    for(const auto &[ptr,size]: serviceSnapshotToRestore){
+        fprintf(out, "  * ");
+        fwrite(ptr.get(), 1, size, out);
+        fprintf(out, "\n");
+    }
 }
 
 #ifdef __cplusplus
@@ -96,17 +106,22 @@ JNIEXPORT jint JNICALL Java_lsr_paxos_replica_storage_PersistentReplicaStorage_d
 }
 
 JNIEXPORT void JNICALL Java_lsr_paxos_replica_storage_PersistentReplicaStorage_setLastReplyForClient (JNIEnv * env, jclass, jlong clientId, jint clientSeqNo, jbyteArray valueJ){
-    pmem::obj::transaction::run(*pop, [&]{
-        size_t valueLength = (size_t) env->GetArrayLength(valueJ);
-        persistent_ptr<signed char[]> valueC;
-        if(valueLength) {
+    pmem::obj::transaction::automatic tx(*pop);
+    size_t valueLength = (size_t) env->GetArrayLength(valueJ);
+    pmx::self_relative_ptr<signed char[]> valueC;
+    if(valueLength) {
+        valueC = blockReuser->pop(valueLength);
+        if (valueC == nullptr){
             valueC = make_persistent<signed char[]>(valueLength);
             env->GetByteArrayRegion(valueJ, 0, valueLength, valueC.get());
         } else {
-            valueC = nullptr;
+            env->GetByteArrayRegion(valueJ, 0, valueLength, valueC.get());
+            pmem_persist(valueC.get(), valueLength);
         }
-        replicaStorage->setLastReplyForClient(clientId, clientSeqNo, valueC, valueLength);
-    });
+    } else {
+        valueC = nullptr;
+    }
+    replicaStorage->setLastReplyForClient(clientId, clientSeqNo, valueC, valueLength);
 }
 
 JNIEXPORT jint JNICALL Java_lsr_paxos_replica_storage_PersistentReplicaStorage_getLastReplySeqNoForClient_1 (JNIEnv *, jclass, jlong clientId){
@@ -124,7 +139,7 @@ JNIEXPORT jobjectArray JNICALL Java_lsr_paxos_replica_storage_PersistentReplicaS
     jobjectArray repliesJ = env->NewObjectArray(count, lsr_common_Reply, nullptr);
     jsize num = 0;
     for(const auto& pair : repliesC){
-        const auto& reply = pair.second.get_ro();
+        const auto& reply = pair.second;
         env->SetObjectArrayElement(repliesJ, num++, jniGlue::reply_to_reply(env, reply, lsr_common_Reply));
     }
     return repliesJ;

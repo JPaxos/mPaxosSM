@@ -2,15 +2,14 @@
 
 
 jint PaxosStorage::updateFirstUncommited(jint snapshotNextId){
-    pm::transaction::run(*pop, [&]{
-        firstUncommited = std::max(snapshotNextId, firstUncommited.get_ro());
-        while(true){
-            const ConsensusInstance * ci = consensusLog->getInstanceIfExists(firstUncommited);
-            if(!ci || ci->getState() != DECIDED )
-                break;
-            firstUncommited++;
-        }   
-    });
+    pmem::obj::transaction::automatic tx(*pop);
+    firstUncommited = std::max(snapshotNextId, firstUncommited.get_ro());
+    while(true){
+        const ConsensusInstance * ci = consensusLog->getInstanceIfExists(firstUncommited);
+        if(!ci || ci->getState() != DECIDED )
+            break;
+        firstUncommited++;
+    }   
     return firstUncommited;
 }
 

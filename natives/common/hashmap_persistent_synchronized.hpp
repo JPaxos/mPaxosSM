@@ -10,6 +10,8 @@
  * WARNING: superclass intentionally does not have virtual methods
  * 
  * WARNING: iterating over / transactions require manual lockUnique / lockShared
+ * 
+ * WARNING: it is compulsory to call resetLock on opening an existing memory pool
  **/
 template <typename K, typename V, class Hash = std::hash<K>, class Compare = std::equal_to<K>>
 class hashmap_persistent_synchronized : public hashmap_persistent<K,V,Hash,Compare> {
@@ -22,23 +24,26 @@ public:
 
     hashmap_persistent_synchronized & operator=(const hashmap_persistent_synchronized &) = delete;
 
-    template<typename... ConstructorArgs>
-    pmem::obj::p<V>& get (pmem::obj::pool_base & pop, const K & k, ConstructorArgs... constructorArgs) {
+    template<typename KK, typename... ConstructorArgs>
+    V& get (pmem::obj::pool_base & pop, const KK & k, ConstructorArgs... constructorArgs) {
         std::unique_lock<std::shared_mutex> lock(mutex);
         return hashmap_persistent<K,V,Hash,Compare>::get(pop, k, constructorArgs...);
     }
 
-    pmem::obj::p<V> * get_if_exists (const K & k) {
+    template<typename KK>
+    V * get_if_exists (const KK & k) {
         std::shared_lock<std::shared_mutex> lock(mutex);
         return hashmap_persistent<K,V,Hash,Compare>::get_if_exists(k);
     }
 
-    const pmem::obj::p<V> * get_if_exists (const K & k) const {
+    template<typename KK>
+    const V * get_if_exists (const KK & k) const {
         std::shared_lock<std::shared_mutex> lock(mutex);
         return hashmap_persistent<K,V,Hash,Compare>::get_if_exists(k);
     }
 
-    bool erase(pmem::obj::pool_base & pop, const K & k) {
+    template<typename KK>
+    bool erase(pmem::obj::pool_base & pop, const KK & k) {
         std::unique_lock<std::shared_mutex> lock(mutex);
         return hashmap_persistent<K,V,Hash,Compare>::erase(pop, k);
     }
@@ -48,6 +53,10 @@ public:
         hashmap_persistent<K,V,Hash,Compare>::clear(pop);
     }
 
+    void resetLock(){
+        new (&mutex) std::shared_mutex();
+    }
+    
     std::unique_lock<std::shared_mutex> lockUnique(){
         return std::unique_lock<std::shared_mutex>(mutex);
     }

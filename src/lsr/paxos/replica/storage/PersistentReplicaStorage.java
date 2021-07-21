@@ -14,7 +14,8 @@ public class PersistentReplicaStorage implements ReplicaStorage {
     private static native int getExecuteUB_();
 
     volatile int executeUBCache = getExecuteUB_();
-
+    int unpackUB = getExecuteUB_();
+    
     @Override
     public int getExecuteUB() {
         return executeUBCache;
@@ -26,6 +27,7 @@ public class PersistentReplicaStorage implements ReplicaStorage {
     public void setExecuteUB(int executeUB) {
         setExecuteUB_(executeUB);
         executeUBCache = executeUB;
+        unpackUB = executeUB;
     }
 
     private static native void incrementExecuteUB_();
@@ -34,6 +36,16 @@ public class PersistentReplicaStorage implements ReplicaStorage {
     public void incrementExecuteUB() {
         incrementExecuteUB_();
         executeUBCache++;
+    }
+    
+    @Override
+    public int getUnpackUB() {
+        return unpackUB;
+    }
+
+    @Override
+    public void incrementUnpackUB() {
+        unpackUB++;
     }
 
     private static native void addDecidedWaitingExecution(int instanceId);

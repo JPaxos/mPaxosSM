@@ -134,10 +134,9 @@ public class Replica {
         serviceProxy = new ServiceProxy(service, replicaDispatcher);
 
         ArrayList<String> lostSnapshot = replicaStorage.getServiceSnapshotToRestore();
-        if (lostSnapshot != null) {
+        if (lostSnapshot != null)
             serviceProxy.updateToSnapshot(lostSnapshot);
-            replicaStorage.removeServiceSnapshotToRestore();
-        }
+        replicaStorage.removeServiceSnapshotToRestore();
     }
 
     /**

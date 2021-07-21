@@ -4,6 +4,9 @@
 #include "simple-kv-service.h"
 
 #include "jpaxos-service.h"
+
+#include <libpmem.h>
+
 extern Config cfg;
 extern jint localId;
 
@@ -11,7 +14,7 @@ extern jint localId;
 #include <cstdio>
 #endif
 
-#ifndef NDEBUG
+#if DIGEST or not NDEBUG 
 #include <openssl/sha.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
@@ -47,14 +50,17 @@ void onFirstRunEver(){
     });
 }
 
+decltype(pop->root()->kvmap) * kvmap;
+decltype(pop->root()->blockReuser) * blockReuser;
+
 void onEachPmemFileOpen(){
+    kvmap = &pop->root()->kvmap;
+    blockReuser = &pop->root()->blockReuser; 
 }
 
 std::tuple<const char *, size_t, bool> execute(JNIEnv * env, long seqNo, const char * request, size_t len){
     if(len < 5)
         env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Too short request");
-    
-    auto & kvmap = pop->root()->kvmap;
     
     char reqType = request[0];
     uint32_t keyLen = fromBE(*(uint32_t*)(request+1));
@@ -79,41 +85,69 @@ std::tuple<const char *, size_t, bool> execute(JNIEnv * env, long seqNo, const c
                 env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Surplus data past key");
                 
             try{
-                auto value = kvmap.get<std::string_view>(key);
-                response = value.data();
-                resposeLength = value.length();
+                const auto& value = kvmap->get<const MemChunk&>(key);
+                response = value.value.get();
+                resposeLength = value.length.get_ro();
             } catch(no_such_key_exception & ex){
                 // default {nullptr, 0, false} are fine here
             }
         break;
         }
         case 'P': {
-            std::string_view value(request + 5 - keyLen, len - 5 - keyLen);
+            const char * newVal = request + 5 - keyLen;
+            size_t newLen = len - 5 - keyLen;
             
             try{
-                auto value = kvmap.get<std::string_view>(key);
-                char * oldVal = new char [value.length()];
-                memcpy(oldVal, value.data(), value.length());
+                auto& value = kvmap->get<MemChunk&>(key);
+                // since we pass that block to reuse, it's safe to point to
+                // where old val was (response & resposeLength are consumed
+                // immediatly at return from execute
+                response = value.value.get();
+                resposeLength = value.length;
                 
-                response = oldVal;
-                resposeLength = value.length();
-                shallDelete = true;
+                decltype(blockReuser->pop(0)) scratchpad;
+                
+                pm::transaction::manual tx(*pop);
+                
+                    // Take a block, give a block. This gets snapshotted.
+                    if(newLen == value.length) {
+                        scratchpad = blockReuser->exchange(value.value, value.length);
+                    } else {
+                        scratchpad = blockReuser->pop(newLen);
+                        blockReuser->push(value.value, value.length);
+                    }
+                    if(scratchpad == nullptr)
+                        scratchpad = pm::make_persistent<char[]>(newLen);
+                
+                    // Do not use pmemobj, as it will snapshot, and we don't want it
+                    pmem_memcpy(scratchpad.get(), newVal, newLen, PMEM_F_MEM_NOFLUSH);
+                    
+                    // Write that now the value is somewhere else.
+                    // Snapshot records the pointer and size, not the contents.
+                    pm::transaction::snapshot(&value);
+                    value.value = scratchpad;
+                    value.length = newLen;
+                    
+                    // memcpy & flush is split to amke things possibly parallel
+                    pmem_flush(scratchpad.get(), newLen);
+                    pmem_drain();
+                    
+                pm::transaction::commit();
+                
             } catch(no_such_key_exception & ex){
                 // default {nullptr, 0, false} are fine here
+                kvmap->insertOrReplace(*pop, key, newVal, newLen);
             }
-            
-            kvmap.insertOrReplace(*pop, key, value);
-            
         break;
         }
         default:
             env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), 
-                          ("Unknown request type: ["s + reqType + ']').c_str());
+                          ("Unknown request type: ["s + reqType + "]"s).c_str());
     }
     
     // FIX ME: put at recovery can now return a different result.
     
-    #ifndef NDEBUG
+    #if DIGEST or not NDEBUG 
         if(pop->root()->lastRequest == seqNo) {
             /* Intentionally empty.
             * 

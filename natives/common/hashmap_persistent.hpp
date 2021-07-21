@@ -1,11 +1,12 @@
 #ifndef HASHMAP_PERSISTENT_H
 #define HASHMAP_PERSISTENT_H
 
+#include <libpmem.h>
 #include <libpmemobj++/pool.hpp>
 #include <libpmemobj++/p.hpp>
 #include <libpmemobj++/make_persistent.hpp>
 #include <libpmemobj++/make_persistent_array.hpp>
-#include <libpmemobj++/persistent_ptr.hpp>
+#include <libpmemobj++/experimental/self_relative_ptr.hpp>
 #include <libpmemobj++/transaction.hpp>
 #include <libpmemobj++/allocator.hpp>
 
@@ -43,16 +44,24 @@
     #define CHECK_ON_ITERATE
 #endif
 
+/**
+ * This is a simple hash map with constant bucket size and place for a key and
+ * a value in each bucket head. See ../service/NvmHashMap.hpp for a more
+ * sophisticated implementation.
+ **/
+
 template <typename K, typename V, class Hash = std::hash<K>, class Compare = std::equal_to<K>>
 class hashmap_persistent {
     struct bucket_entry {
         bucket_entry() = default;
         bucket_entry(K k) : key(k), value(V()) {}
-        template<typename... Args>
-        bucket_entry(K k, Args... args) : key(k), value(V({args...})) {}
-        pmem::obj::p<K> key;
-        pmem::obj::p<V> value;
-        pmem::obj::persistent_ptr<bucket_entry> next {pmem::obj::persistent_ptr<bucket_entry>()};
+        template<typename KK, typename... Args>
+        bucket_entry(const KK & k, Args... args) : key(k), value(args...) {}
+        template<typename KK, typename... Args>
+        bucket_entry(KK && k, Args... args) : key(k), value(args...) {}
+        K key;
+        V value;
+        pmem::obj::experimental::self_relative_ptr<bucket_entry> next {pmem::obj::experimental::self_relative_ptr<bucket_entry>()};
     };
     struct bucket_entry_head : public bucket_entry {
         // Warning: PMDK is able only to call the default constructor(!) for this class, since it is a part of an array.
@@ -60,40 +69,45 @@ class hashmap_persistent {
         pmem::obj::p<bool> valid {false};
     };
     
-    static Hash    _hash;
-    static Compare _compare;
-    pmem::obj::persistent_ptr<bucket_entry_head[]> _buckets;
+    Hash    _hash;
+    Compare _compare;
+    pmem::obj::experimental::self_relative_ptr<bucket_entry_head[]> _buckets;
     pmem::obj::p<size_t> _bucketCount;
     pmem::obj::p<size_t> _elementCount {0};
     
     CHECK_INIT
     
-    bucket_entry_head * getBucketHead(const K & k) const{
+    template<typename KK>
+    bucket_entry_head * getBucketHead(const KK & k) const{
         return &(_buckets[_hash(k)%_bucketCount]);
     }
     
 public:
     hashmap_persistent(pmem::obj::pool_base & pop, size_t bucketCount = 128) : _bucketCount(bucketCount) {
-        pmem::obj::transaction::run(pop, [&]{ 
-            _buckets = pmem::obj::make_persistent<bucket_entry_head[]>(bucketCount);
-        });
+        pmem::obj::transaction::automatic tx(pop);
+        _buckets = pmem::obj::make_persistent<bucket_entry_head[]>(bucketCount);
     }
     
     hashmap_persistent & operator=(const hashmap_persistent &) = delete;
     
-    template<typename... ConstructorArgs>
-    pmem::obj::p<V>& get (pmem::obj::pool_base & pop, const K & k, ConstructorArgs... constructorArgs){
+    template<typename KK, typename... ConstructorArgs>
+    V& get (pmem::obj::pool_base & pop, const KK & k, ConstructorArgs... constructorArgs){
         CHECK_ON_MODIFY_INVOKE
         bucket_entry_head * head = getBucketHead(k);
         
         // if there is no head, insert as head
         if(!head->valid){
-            pmem::obj::transaction::run(pop, [&]{ 
-                head->key = k;
-                head->value = V({constructorArgs...});
+            pmem::obj::transaction::manual tx(pop);
+                // no need to snapshot key and value, as head is not valid, so
+                // key and value are scratch
+                new (&head->key) K(k);
+                new (&head->value) V(constructorArgs...);
                 head->valid = true;
                 _elementCount++;
-            });
+                pmem_flush(&head->key, sizeof(head->key));
+                pmem_flush(&head->value, sizeof(head->value));
+                pmem_drain();
+            pmem::obj::transaction::commit();
             assert(head->next==nullptr);
             CHECK_ON_MODIFY_RETURN
             return head->value;
@@ -103,10 +117,10 @@ public:
         bucket_entry * be = head;
         while(!_compare(be->key, k)){
             if(be->next == nullptr){
-                pmem::obj::transaction::run(pop, [&]{ 
+                pmem::obj::transaction::manual tx(pop);
                     be->next = pmem::obj::make_persistent<bucket_entry>(k, constructorArgs...);
                     _elementCount++;
-                });
+                pmem::obj::transaction::commit();
                 
                 CHECK_ON_MODIFY_RETURN
                 return be->next->value;
@@ -117,16 +131,19 @@ public:
         return be->value;
     }
     
-    pmem::obj::p<V> * get_if_exists (const K & k) {
+    template <typename KK>
+    V* get_if_exists (const KK & k) {
         return get_if_exists_(k);
     }
     
-    const pmem::obj::p<V> * get_if_exists (const K & k) const {
+    template <typename KK>
+    const V* get_if_exists (const KK & k) const {
         return get_if_exists_(k);
     }
     
     private:
-    pmem::obj::p<V> * get_if_exists_ (const K & k) const {
+    template <typename KK>
+    V* get_if_exists_ (const KK & k) const {
         CHECK_ON_READ_INVOKE
         bucket_entry_head * head = getBucketHead(k);
         
@@ -148,7 +165,8 @@ public:
     }
     public:
     
-    bool erase(pmem::obj::pool_base & pop, const K & k){
+    template <typename KK>
+    bool erase(pmem::obj::pool_base & pop, const KK & k){
         CHECK_ON_MODIFY_INVOKE
         bucket_entry_head * head = getBucketHead(k);
         
@@ -158,18 +176,23 @@ public:
         
         // chopping head off
         if(_compare(head->key, k)){
-            pmem::obj::transaction::run(pop, [&]{
+            pmem::obj::transaction::manual tx(pop);
                 if(head->next == nullptr){
                     head->valid = false;
                 } else {
                     auto next = head->next;
-                    head->key = next->key;
+                    pmem::obj::transaction::snapshot(&head->key);
+                    pmem::obj::transaction::snapshot(&head->value);
+                    // move may hurt old locations, hence we also need to
+                    pmem::obj::transaction::snapshot(&next->key);
+                    pmem::obj::transaction::snapshot(&next->value);
+                    head->key = std::move(next->key);
                     head->value = std::move(next->value);
                     head->next = next->next;
                     pmem::obj::delete_persistent<bucket_entry>(next);
                 }
                 _elementCount--;
-            });
+            pmem::obj::transaction::commit();
             CHECK_ON_MODIFY_RETURN
             return true;
         }
@@ -183,12 +206,12 @@ public:
             }
         
             if(_compare(be->next->key, k)){
-                pmem::obj::transaction::run(pop, [&]{
-                    pmem::obj::persistent_ptr<bucket_entry> next = std::move(be->next);
+                pmem::obj::transaction::manual tx(pop);
+                    auto next = be->next;
                     be->next = next->next;
                     pmem::obj::delete_persistent<bucket_entry>(next);
                     _elementCount--;
-                });
+                pmem::obj::transaction::commit();
                 CHECK_ON_MODIFY_RETURN
                 return true;
             }
@@ -198,11 +221,11 @@ public:
     
     void clear(pmem::obj::pool_base & pop) {
         CHECK_ON_MODIFY_INVOKE
-        pmem::obj::transaction::run(pop, [&]{
+        pmem::obj::transaction::manual tx(pop);
             for(size_t i = 0; i < _bucketCount; ++i){
                 auto & head = _buckets[i];
                 head.valid = false;
-                pmem::obj::persistent_ptr<bucket_entry> & curr = head.next, next;
+                decltype(head.next) & curr = head.next, next;
                 
                 while(curr) {
                     next = curr->next;
@@ -211,7 +234,7 @@ public:
                 }
             }
             _elementCount = 0;
-        });
+        pmem::obj::transaction::commit();
         CHECK_ON_MODIFY_RETURN
     }
     
@@ -258,7 +281,7 @@ private:
             return getFromNextBucket();
         }
         
-        bool operator!=(const iterator_base& o){
+        bool operator!=(const iterator_base& o) const {
             return o.thisItem != thisItem;
         }
     };
@@ -266,16 +289,18 @@ private:
     class const_iterator : public iterator_base {
     public:
         const_iterator(const hashmap_persistent * hm) : iterator_base(hm){}
-        const std::pair<const K&, pmem::obj::p<V>&> operator*() const {
-            return std::pair<const K&, pmem::obj::p<V>&>(this->thisItem->key.get_ro(), this->thisItem->value);
+        const std::pair<const K&, const V&> operator*() const {
+            return std::pair<const K&, const V&>(this->thisItem->key, this->thisItem->value);
         }
     };
     
     class iterator : public const_iterator {
     public:
         iterator(const hashmap_persistent * hm) : const_iterator(hm){}
-        std::pair<const K&, pmem::obj::p<V>&> operator*(){
-            return std::pair<const K&, pmem::obj::p<V>&>(this->thisItem->key.get_ro(), this->thisItem->value);
+        std::pair<const K&, V&> operator*(){
+            if (TX_STAGE_WORK == pmemobj_tx_stage())
+                pmem::obj::transaction::snapshot(&this->thisItem->value);
+            return std::pair<const K&, V&>(this->thisItem->key, this->thisItem->value);
         }
     };
     

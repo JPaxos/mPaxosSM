@@ -30,7 +30,9 @@ class ReplicaStorage
 {
     jint executeUB {0};
     jlong serviceSeqNo {0};
+    
     std::unordered_set<jint> decidedWaitingExecution = std::unordered_set<jint>(128);
+    mutable std::shared_mutex dweMtx;
     
     
     std::unordered_map<jlong, ClientReply> lastReplyForClient = std::unordered_map<jlong, ClientReply>(2<<14 /* 16384 */);
@@ -55,22 +57,26 @@ public:
         #ifdef DEBUG_DISAPPEARING_CI_VALUE
         fprintf(debugLogFile, "Adding DWE %d thread: %d\n", instanceId, gettid());
         #endif
+        std::unique_lock l(dweMtx);
         decidedWaitingExecution.insert(instanceId);
     }
     jboolean isDecidedWaitingExecution(jint instanceId) const {
         #ifdef DEBUG_DISAPPEARING_CI_VALUE
         fprintf(debugLogFile, "Checking DWE %d thread: %d\n", instanceId, gettid());
         #endif
+        std::shared_lock l(dweMtx);
         return (decidedWaitingExecution.find(instanceId) != decidedWaitingExecution.end()) ? JNI_TRUE : JNI_FALSE;
     }
     void releaseDecidedWaitingExecution(jint instanceId) {
         #ifdef DEBUG_DISAPPEARING_CI_VALUE
         fprintf(debugLogFile, "Releasing DWE %d thread: %d\n", instanceId, gettid());
         #endif
+        std::unique_lock l(dweMtx);
         decidedWaitingExecution.erase(instanceId);
     }
     void releaseDecidedWaitingExecutionUpTo(jint instanceId) {
         std::list<jint> instancesToRemove;
+        std::unique_lock l(dweMtx);
         for(auto iid: decidedWaitingExecution){
             if(iid < instanceId)
                 instancesToRemove.push_back(iid);
@@ -78,7 +84,10 @@ public:
         for(auto iid: instancesToRemove)
             decidedWaitingExecution.erase(iid);
     }
-    size_t decidedWaitingExecutionCount() const {return decidedWaitingExecution.size();}
+    size_t decidedWaitingExecutionCount() const {
+        std::shared_lock l(dweMtx);
+        return decidedWaitingExecution.size();
+    }
     
     /// called from within a transaction
     void setLastReplyForClient(jlong clientId, jint clientSeqNo, signed char * value, size_t valueLength){

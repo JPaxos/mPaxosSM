@@ -22,7 +22,6 @@ import lsr.paxos.messages.Prepare;
 import lsr.paxos.messages.PrepareOK;
 import lsr.paxos.messages.Propose;
 import lsr.paxos.network.Network;
-import lsr.paxos.replica.ClientBatchID;
 import lsr.paxos.replica.storage.ReplicaStorage;
 import lsr.paxos.storage.ConsensusInstance;
 import lsr.paxos.storage.ConsensusInstance.LogEntryState;
@@ -275,9 +274,8 @@ public class ProposerImpl implements Proposer {
     }
 
     private void fillWithNoOperation(ConsensusInstance instance) {
-        ByteBuffer bb = ByteBuffer.allocate(4 + ClientBatchID.NOP.byteSize());
-        bb.putInt(1); // Size of batch
-        ClientBatchID.NOP.writeTo(bb); // request
+        ByteBuffer bb = ByteBuffer.allocate(4);
+        bb.putInt(0); // Size of batch
         instance.updateStateFromPropose(processDescriptor.localId, storage.getView(), bb.array());
         continueProposal(instance);
     }

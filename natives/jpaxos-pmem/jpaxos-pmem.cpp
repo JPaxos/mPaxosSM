@@ -25,6 +25,7 @@ struct root {
     ConsensusLog consensusLog;
     PaxosStorage paxosStorage;
     ReplicaStorage replicaStorage;
+    MultiBlockReuser<pmx::self_relative_ptr<jbyte[]>> blockReuser;
 };
 
 // These three variables are extern'ed for convenience 
@@ -32,6 +33,7 @@ pm::pool<root> *pop;
 PaxosStorage *paxosStorage;
 ReplicaStorage *replicaStorage;
 ConsensusLog *consensusLog;
+MultiBlockReuser<pmx::self_relative_ptr<jbyte[]>> *blockReuser;
 
 thread_local pm::transaction::automatic * currentTransaction = nullptr;
 thread_local unsigned currentTransactionDepth = 0;
@@ -86,11 +88,14 @@ JNIEXPORT void JNICALL Java_lsr_paxos_NATIVE_PersistentMemory_init (JNIEnv * jni
         });
     } else {
         *pop = pm::pool<root>::open(pmemFile, std::string());
+        pop->root()->replicaStorage.onPoolOpen();
+        pop->root()->consensusLog.onPoolOpen();
     }
   
     paxosStorage = &(pop->root()->paxosStorage);
     replicaStorage = &(pop->root()->replicaStorage);
     consensusLog = &(pop->root()->consensusLog);
+    blockReuser = &(pop->root()->blockReuser);
     
     ::numReplicas_ = pop->root()->numReplicas;
     if(::numReplicas_ != numReplicas){
@@ -151,6 +156,7 @@ void dumpJpaxosPmem(char * pmemFile, FILE * outFile){
     paxosStorage = &(pop->root()->paxosStorage);
     replicaStorage = &(pop->root()->replicaStorage);
     consensusLog = &(pop->root()->consensusLog);
+    blockReuser = &(pop->root()->blockReuser);
     
     ::numReplicas_ = pop->root()->numReplicas;
     ::majority_ = (::numReplicas_+1)/2;
@@ -159,6 +165,8 @@ void dumpJpaxosPmem(char * pmemFile, FILE * outFile){
     paxosStorage->dump(outFile);
     consensusLog->dump(outFile);
     replicaStorage->dump(outFile);
+    
+    blockReuser->dump(outFile);
 }
 
 #ifdef __cplusplus
@@ -171,6 +179,7 @@ inline void createRootDataItem(jint numReplicas){
     new (&(pop->root()->consensusLog)) ConsensusLog();
     new (&(pop->root()->paxosStorage)) PaxosStorage();
     new (&(pop->root()->replicaStorage)) ReplicaStorage();
+    new (&(pop->root()->blockReuser)) decltype(pop->root()->blockReuser)();
     pop->root()->numReplicas = numReplicas;
 }
 

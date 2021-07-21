@@ -23,6 +23,8 @@ class ConsensusLog
 public:
     ConsensusLog(){}
     
+    void onPoolOpen(){instances.resetLock();}
+    
     jint append();
     void appendUpTo(jint id);
     ConsensusInstance & getInstanceRw(jint id);

@@ -6,8 +6,11 @@
 #include <string_view>
 #include <bit>
 
-#include <libpmemobj++/container/string.hpp>
 #include <libpmemobj++/container/vector.hpp>
+#include <libpmemobj++/container/string.hpp>
+#include <libpmemobj++/experimental/self_relative_ptr.hpp>
+#include "../common/memchunk.hpp"
+#include "../common/blockreuser.hpp"
 
 using namespace std::literals;
 
@@ -17,13 +20,15 @@ using namespace std::literals;
 #undef DEBUG_REQUESTS
 
 namespace pm = pmem::obj;
+namespace pmx = pmem::obj::experimental;
 
 #define SHA512_DIGEST_LENGTH 64
 
 struct root {
-    NvmHashMap<pm::string, pm::string, false, MyHash, MyComparator, MyFactory, MyFactory> kvmap;
+    NvmHashMap<pm::string, MemChunk, false, MyHash, MyComparator, MyFactory, MemChunkMaker> kvmap;
     pm::p<long> lastRequest = {-1};
     pm::array<unsigned char, SHA512_DIGEST_LENGTH> lastSha = {};
+    BlockReuser<pmx::self_relative_ptr<char[]>> blockReuser;
 };
 
 extern pm::pool<root> *pop;
