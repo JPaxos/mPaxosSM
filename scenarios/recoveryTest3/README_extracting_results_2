@@ -1,0 +1,83 @@
+
+# get crash patterns
+for x in ???; do echo $x $(sqlite3 $x/jpdb.sqlite3 "select round(time,0) ,id as 'replica', view from viewchangesucceeded order by time asc;"); done | sed 's/ 50.0|2|2//' viewchange_pattern | sort -k2 > viewchange_pattern_sorted
+
+# inspect crash patterns
+less viewchange_pattern_sorted
+
+# count them
+grep '30.0|1|4' viewchange_pattern_sorted | wc -l
+# this is leader crash: 251 cases
+grep '1.0|0|3$' viewchange_pattern_sorted | wc -l
+# this is follower crash: 462 cases
+
+# separate results
+mkdir followerCrash leaderCrash
+for R in $(grep '1.0|0|3$' viewchange_pattern_sorted | cut -f 1 -d ' '); do ln ${R}/jpdb.sqlite3 followerCrash/${R}.sqlite3; done
+for R in $(grep '30.0|1|4' viewchange_pattern_sorted | cut -f 1 -d ' '); do ln ${R}/jpdb.sqlite3 leaderCrash/${R}.sqlite3; done
+
+# save the interesting results
+tar cJf 2019.10.11.tar.xz leaderCrash followerCrash
+
+# getting smoothed numeric results 
+mkdir results
+for CRASH in leaderCrash followerCrash
+do
+    cat << EOF | while read COLUMN TABLE NAME
+rps rps rps
+dps  dps dps
+max  cpu maxCpu
+up*8 net ifUp
+EOF
+    do
+        for PROC in 0 1 2
+        do
+            echo "$CRASH - $NAME$PROC"
+            for DB in $CRASH/*.sqlite3
+            do
+            	sqlite3 $DB <<< "select time, $COLUMN from $TABLE where id=$PROC and time+0>0;";
+            done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > results/${CRASH}_${NAME}${PROC}_0.05
+        done
+    done
+done
+for x in results/leaderCrash_*; do mv $x ${x/leaderCrash/lc}; done
+for x in results/followerCrash_*; do mv $x ${x/followerCrash/fc}; done
+# put empty line during crash, this stops gnuplot from drawing line between samples
+gawk -i inplace '$1-last > 2 {print ""};{last=$1; print}' results/*
+
+# plots
+mkdir svgs
+export RECOVERY_TIME=$( for DB in followerCrash/*.sqlite3; do sqlite3 $DB "select time from start where run=1;"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a;' )
+# Q: "why crash time has +0.05?" A: "We sample RPS every 0.1s, so at average last sample is 0.05s before crash."
+export CRASH_TIME=$( for DB in followerCrash/*.sqlite3; do sqlite3 $DB "select max(time) from rps where id=2 and time < 40"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a+0.05;' )
+export TITLE="[jpaxos_pmem@pmem, 512MB app snapshot, follower crash]"
+export XMAX=100
+export PREFIX='results/fc_'
+export TARGET='svgs/fc_'
+export R0='leader'
+export R1='follower'
+export R2='crashing follower'
+./makeSvgs.sh
+export RECOVERY_TIME=$( for DB in leaderCrash/*.sqlite3; do sqlite3 $DB "select time from start where run=1;"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a;' )
+# Q: "why crash time has +0.05?" A: "We sample RPS every 0.1s, so at average last sample is 0.05s before crash."
+export CRASH_TIME=$( for DB in leaderCrash/*.sqlite3; do sqlite3 $DB "select max(time) from rps where id=2 and time < 40"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a+0.05;' )
+export TITLE="[jpaxos_pmem@pmem, 512MB app snapshot, leader crash]"
+export XMAX=100
+export PREFIX='results/lc_'
+export TARGET='svgs/lc_'
+export R0='follower'
+export R1='follower becoming leader'
+export R2='crashing leader'
+./makeSvgs.sh
+
+# recovery time and metadata
+for T in followerCrash leaderCrash
+do
+	echo "=== $T ==="
+	for DB in $T/*.sqlite3; do sqlite3 $DB "select size from catchSnapSent"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "Snapshot size: %.3f MB\n", sum(@a)/@a/1024./1024.;'
+	( HEADER=y ./catchupParser.pl; for DB in $T/*.sqlite3; do  ./catchupParser.pl $DB; done | ./avgCatchups.pl ) | column -t
+done
+
+
+
+

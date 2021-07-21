@@ -1,0 +1,147 @@
+
+# get CU patterns:
+for x in ???; do echo $x $(sqlite3 $x/jpdb.sqlite3 "select round(time,0) ,id as 'replica', view from viewchangesucceeded order by time asc;"); done | sort -k2 > viewchange_pattern_sorted
+
+# remove leader election fights leftovers:
+sed -i 's/1.0|4|4 1.0|0|5/1.0|0|5/' viewchange_pattern_sorted
+
+# in leader crash, remove message that the process recovers as a leader (this message may not occur due to race with incoming messsage that changes view)
+sed -i 's/ 50.0|4|4//' viewchange_pattern_sorted
+
+cut -d' ' -f 2- viewchange_pattern_sorted | sort | uniq -c
+#   218 1.0|0|5                         <- this is follower crash
+#    11 1.0|4|4 30.0|2|7                <- this is leader crash, and I ignore it becasue I don't want to rewrite scripts to mirror results on R3 and R2
+#    81 1.0|4|4 30.0|3|8                <- this is leader crash
+#     1 1.0|4|4 30.0|3|8 66.0|4|4       <- this is suspicious
+#     1 2.0|0|5                         <- this is follower crash
+                          
+
+mkdir followerCrash leaderCrash
+for R in $(grep ' [12].0|0|5$' viewchange_pattern_sorted | cut -f 1 -d ' '); do ln ${R}/jpdb.sqlite3 followerCrash/${R}.sqlite3; done
+for R in $(grep ' [12].0|4|4 30.0|3|8$' viewchange_pattern_sorted | cut -f 1 -d ' '); do ln ${R}/jpdb.sqlite3 leaderCrash/${R}.sqlite3; done
+
+    # DOiE admins fucked up NTP server and so the scripts for telling what happend are unreliable
+    # so make lots of plots to and see what was happening and sort out those with extra CU or other anomalies
+    mkdir svgs
+    for x in ???; do for i in {0..4}; do parallel -j 48 --semaphorename jpaxos SVG=svgs/$x-$i.svg ~/jpaxos/tools/plots.sh $i $x/jpdb.sqlite3 & done; done
+    rm -rf svgs
+
+    # the "bad" ones files were:
+    # 108 032 178 229 247 312 297 293 273 260 008 099 121 144 155 163 165 173 200 222 229 260 
+
+________________________________________________________________________________________________
+
+for x in `seq -w 1 200`; do echo $x $(sqlite3 $x/jpdb.sqlite3 "select round(time,0) ,id as 'replica', view from viewchangesucceeded order by time asc;"); done > viewchange_pattern
+sort -k2 viewchange_pattern > viewchange_pattern_sorted
+
+sed -i 's/1.0|4|4 1.0|0|5/1.0|0|5/' viewchange_pattern
+sed -i 's/30.0|3|8 50.0|4|4/30.0|3|8/' viewchange_pattern
+
+cut -f 2- -d ' ' viewchange_pattern_sorted | uniq -c
+    151 1.0|0|5                       <- follower crash       
+      1 1.0|4|4 30.0|0|5 50.0|4|4     \
+      2 1.0|4|4 30.0|1|6 50.0|4|4      |
+     19 1.0|4|4 30.0|2|7 50.0|4|4      |-- leader crashes
+     99 1.0|4|4 30.0|3|8              /                         <- I use only this one for leader crash
+      1 6.0|0|5                      <- follower crash, something odd about time
+
+
+mkdir lc
+mkdir fc
+for x in `grep '1.0|0|5' viewchange_pattern |          cut -f 1 -d ' '`; do ln $x/jpdb.sqlite3 fc/$x.sqlite3; done
+for x in `grep '1.0|4|4 30.0|3|8' viewchange_pattern | cut -f 1 -d ' '`; do ln $x/jpdb.sqlite3 lc/$x.sqlite3; done
+
+mkdir {lc,fc}/extraCatchups 
+cd lc
+for x in *.sqlite3; do if (( 1 != $( ../catchupParser.pl $x 2>&1 | wc -l) )); then mv $x extraCatchups ; fi; done
+cd ../fc
+for x in *.sqlite3; do if (( 1 != $( ../catchupParser.pl $x 2>&1 | wc -l) )); then mv $x extraCatchups ; fi; done
+cd ..
+
+ls fc/extraCatchups | wc -l
+2
+ls lc/extraCatchups | wc -l
+17
+ls fc | wc -l
+150
+ls lc | wc -l
+83
+
+rm -rf fc/extraCatchups lc/extraCatchups
+
+
+ 
+echo === lc ===
+(HEADER=2 ./catchupParser.pl ; for x in fc/*; do ./catchupParser.pl $x; done | ./avgCatchups.pl) | column -t
+echo === fc ===
+(HEADER=2 ./catchupParser.pl ; for x in lc/*; do ./catchupParser.pl $x; done | ./avgCatchups.pl) | column -t
+echo === all ===
+(HEADER=2 ./catchupParser.pl ; for x in {lc,fc}/*; do ./catchupParser.pl $x; done | ./avgCatchups.pl) | column -t
+
+
+
+
+
+
+
+# produce the results
+for CRASH in leaderCrash followerCrash
+do
+    cat << EOF | while read COLUMN TABLE NAME
+rps rps rps
+dps  dps dps
+max  cpu maxCpu
+up*8 net ifUp
+EOF
+    do
+        for PROC in 0 1 2 3 4
+        do
+            echo "$CRASH - $NAME$PROC"
+            for DB in $CRASH/*.sqlite3
+            do
+                sqlite3 $DB <<< "select time, $COLUMN from $TABLE where id=$PROC and time+0>0;";
+            done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > results/${CRASH}_${NAME}${PROC}_0.05
+       done
+   done
+done
+for x in results/leaderCrash_*; do mv $x ${x/leaderCrash/lc}; done
+for x in results/followerCrash_*; do mv $x ${x/followerCrash/fc}; done
+gawk -i inplace '$1-last > 2 {print ""};{last=$1; print}' results/*
+
+
+# plots
+mkdir svgs
+
+export RECOVERY_TIME=$( for DB in followerCrash/*.sqlite3; do sqlite3 $DB "select time from start where run=1;"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a;' )
+export CRASH_TIME=$( for DB in followerCrash/*.sqlite3; do sqlite3 $DB "select max(time) from rps where id=4 and time < 40"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a+0.05;' )
+export TITLE="[jpaxos_pmem@pmem, 512MB app snapshot, follower crash]"
+export XMAX=100
+export PREFIX='results/fc_'
+export TARGET='svgs/fc_'
+export R0='leader'
+export R1='follower used for catchUp'
+export R2='follower'
+export R3='follower'
+export R4='crashing follower'
+~/jpaxos_pmem/scenarios/recoveryTest5/makeSvgs.sh
+
+export PREFIX='results/fc_bad_'
+export TARGET='svgs/bad_fc_'
+~/jpaxos_pmem/scenarios/recoveryTest5/makeSvgs.sh
+
+export RECOVERY_TIME=$( for DB in leaderCrash/*.sqlite3; do sqlite3 $DB "select time from start where run=1;"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a;' )
+export CRASH_TIME=$( for DB in leaderCrash/*.sqlite3; do sqlite3 $DB "select max(time) from rps where id=4 and time < 40"; done | perl -e 'use List::Util "sum"; my @a; push @a, $_ for(<>); printf "%.3f", sum(@a)/@a+0.05;' )
+export TITLE="[jpaxos_pmem@pmem, 512MB app snapshot, leader crash]"
+export XMAX=100
+export PREFIX='results/lc_'
+export TARGET='svgs/lc_'
+export R0='follower used for catchUp'
+export R1='follower'
+export R2='follower'
+export R3='follower becoming leader'
+export R4='crashing leader'
+~/jpaxos_pmem/scenarios/recoveryTest5/makeSvgs.sh
+
+export PREFIX='results/lc_bad_'
+export TARGET='svgs/bad_lc_'
+~/jpaxos_pmem/scenarios/recoveryTest5/makeSvgs.sh

@@ -1,0 +1,103 @@
+Filtering results
+==========================
+for x in `seq -w 1 200`; do echo $x $(sqlite3 $x/jpdb.sqlite3 "select round(time,0) ,id as 'replica', view from viewchangesucceeded order by time asc;"); done > viewchange_pattern
+sort -k2 viewchange_pattern > viewchange_pattern_sorted
+# edit viewchange_pattern_sorted and get typical runs into a file
+mv `cut -f1 -d ' ' viewchange_pattern_typical` typical
+mv 0* 1* 2* uncommon/
+
+
+Result files
+==========================
+
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, rps from rps where id=0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > rps0_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, rps from rps where id=1;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > rps1_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, rps from rps where id=2;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > rps2_0.05
+
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, dps from dps where id=0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > dps0_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, dps from dps where id=1;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > dps1_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, dps from dps where id=2;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > dps2_0.05
+
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, max from cpu where id=0 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > cpu0_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, max from cpu where id=1 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > cpu1_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, max from cpu where id=2 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > cpu2_0.05
+
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, up from net where id=0 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > ifUp0_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, up from net where id=1 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > ifUp1_0.05
+for x in typical/*; do sqlite3 $x/jpdb.sqlite3  <<< 'select time, up from net where id=2 and time+0>0;'; done | tr '|' '\t' | ~/jpaxos/tools/movingWindow.pl 0.05 > ifUp2_0.05
+
+Gnuplot
+=========================
+
+set terminal svg size 900,600;
+set xrange [0:80]
+set tmargin 1
+
+set arrow 1 from 28.427, graph 0 to 28.427, graph 1 nohead dashtype "--";
+set arrow 2 from 50.000, graph 0 to 50.000, graph 1 nohead dashtype "--";
+
+set yrange [0:1e5]
+
+set output "svg/rps0.svg";
+set title "jpaxos@pmem, 256MB app snapshot, crashing leader, smoothed 0.05s, RPS" offset 0,-1 noenhanced
+plot 'rps0_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/rps1.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower, smoothed 0.05s, RPS" offset 0,-1 noenhanced
+plot 'rps1_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/rps2.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower advancing to leader, smoothed 0.05s, RPS" offset 0,-1 noenhanced
+plot 'rps2_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+
+set yrange [0:3e3]
+
+set output "svg/dps0.svg";
+set title "jpaxos@pmem, 256MB app snapshot, crashing leader, smoothed 0.05s, DPS" offset 0,-1 noenhanced
+plot 'dps0_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/dps1.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower, smoothed 0.05s, DPS" offset 0,-1 noenhanced
+plot 'dps1_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/dps2.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower advancing to leader, smoothed 0.05s, DPS" offset 0,-1 noenhanced
+plot 'dps2_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+
+set yrange [0:100]
+
+set output "svg/cpu0.svg";
+set title "jpaxos@pmem, 256MB app snapshot, crashing leader, smoothed 0.05s, max CPU" offset 0,-1 noenhanced
+plot 'cpu0_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/cpu1.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower, smoothed 0.05s, max CPU" offset 0,-1 noenhanced
+plot 'cpu1_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/cpu2.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower advancing to leader, smoothed 0.05s, max CPU" offset 0,-1 noenhanced
+plot 'cpu2_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+
+set yrange [0:1e9]
+
+set output "svg/ifUp0.svg";
+set title "jpaxos@pmem, 256MB app snapshot, crashing leader, smoothed 0.05s, ifUp" offset 0,-1 noenhanced
+plot 'ifUp0_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/ifUp1.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower, smoothed 0.05s, ifUp" offset 0,-1 noenhanced
+plot 'ifUp1_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+set output "svg/ifUp2.svg";
+set title "jpaxos@pmem, 256MB app snapshot, follower advancing to leader, smoothed 0.05s, ifUp" offset 0,-1 noenhanced
+plot 'ifUp2_0.05' with filledcurves x1 fs solid 0.1 notitle , '' with lines lt 1 lw 2 notitle;
+
+=========================
+
+catchups:
+
+( HEADER=y ./catchupParser.pl; for x in typical/*; do  ./catchupParser.pl $x/jpdb.sqlite3; done ) > catchups
+

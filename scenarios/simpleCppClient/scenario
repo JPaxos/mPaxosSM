@@ -1,0 +1,24 @@
+/tmp/jpaxos_NUM/replica.sh NUM
+/tmp/jpaxos_client/client.sh 1024 10000 true
+---
+ReplicaProcessController
+
+# START_EVENT+SHIFT   TYPE            CREATE  HOST      ID                 EVENT
+Start+0               replica         create  ×         0                  R_1
+Start+0               replica         create  ×         1                  R_2
+Start+500             replica         create  ×         2                  R_3
+
+# START_EVENT+SHIFT   TYPE    TARGET  CREATE  WHERE                        EVENT
+R_1,R_2,R_3+500       client  a       create  ×                            START_CLIENTS
+                                              
+# START_EVENT+SHIFT   TYPE    TARGET  SEND    REQUESTS  SUBCLIENT  RANDOM  EVENT
+START_CLIENTS+0       client  a       send    1000000   500                NONE
+
+// crash&recovery
+START_CLIENTS+5000    replica          stop              2                 CRASH
+
+CRASH+5000            replica          create  ×         2                 RECOVER
+
+RECOVER+5000          client   a       kill                                KILL_CLIENTS
+
+KILL_CLIENTS+500      replica          stop   -1      NONE

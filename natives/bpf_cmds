@@ -1,0 +1,25 @@
+# This is a set of tracing commands that were used during developend of JpaxosPMEM
+
+# all funcs
+until pgrep -f 'GenericJniService 0'; do :; done;  bpftrace -e 'uprobe:jpaxos_0/libjpaxos-pmem.so:Java_lsr_paxos* {printf("[%d/%d] %s\n", pid, tid, func);}'
+
+# all funcs + args
+until pgrep -f 'GenericJniService 0'; do :; done;  bpftrace -e 'uprobe:jpaxos_0/libjpaxos-pmem.so:Java_lsr_paxos* {printf("[%d/%d] %s ", pid, tid, func); printf(" (%d, %d, %d, %d, %d, %d)\n", arg0, arg1, arg2, arg3, arg4, arg5);}'
+
+# all pmobj func&args
+until pgrep -f 'GenericJniService 0'; do :; done;  bpftrace -e 'uprobe:/usr/lib64/pmdk_debug/libpmemobj.so.1.0.0:pmemobj* {printf("[%d/%d] %s ", pid, tid, func); printf(" (%d, %d, %d, %d, %d, %d)\n", arg0, arg1, arg2, arg3, arg4, arg5);}'
+
+# returned vals
+until pgrep -f 'GenericJniService 1'; do :; done;  bpftrace -e 'uretprobe:jpaxos_1/libjpaxos-pmem.so:Java_lsr_paxos* {printf("[%d/%d] %s ", pid, tid, func); printf(" → %d\n", retval);}' | tee what
+
+# DWE ops
+cat dwe.sh
+
+
+_Z7executeP7JNIEnv_PKcm
+execute(JNIEnv_*, char const*, unsigned long)
+until pgrep -f 'GenericJniService 0'; do :; done; bpftrace -e 'uprobe:jpaxos_0/libjpaxos-service.so:_Z7executeP7JNIEnv_PKcm {printf("%s %d %ld\n", func, *arg1, arg2);}' 2>&1 | tee bpf
+
+while [ ! "$(pgrep -f lsr.paxos)" ]; do :; done; echo 'Starting'; bpftrace -e 'uprobe:jpaxos_1/libjpaxos-pmem.so:Java_lsr_paxos* {printf("[%d/%d] %s ", pid, tid, func); printf(" (%d, %d, %d, %d, %d, %d)\n", arg0, arg1, arg2, arg3, arg4, arg5);}' > bpftrace-jpaxos.log
+
+while [ ! "$(pgrep -f lsr.paxos)" ]; do :; done; echo 'Starting'; bpftrace -e 'uprobe:jpaxos_1/libjpaxos-pmem.so:Java_lsr_paxos_storage_PersistentConsensusInstance* {printf("[%d/%d] %s ", pid, tid, func); printf(" (%d, %d, %d, %d, %d, %d)\n", arg0, arg1, arg2, arg3, arg4, arg5);} uprobe:jpaxos_1/libjpaxos-pmem.so:Java_lsr_paxos_storage_PersistentLog* {printf("[%d/%d] %s ", pid, tid, func); printf(" (%d, %d, %d, %d, %d, %d)\n", arg0, arg1, arg2, arg3, arg4, arg5);}' > bpftrace-jpaxos.log

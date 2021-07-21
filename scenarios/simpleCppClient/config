@@ -1,0 +1,28 @@
+#!/bin/echo this file should be sourced: 
+
+### clean up ###
+
+NVMBASEDIR="$(grep NvmBaseDir $SCENARIO/paxos.properties | sed 's/^[[:space:]]*NvmBaseDir[[:space:]]*=[[:space:]]*//i')"
+
+echo "cleaning old pmem files in $NVMBASEDIR"
+rm -vrf "$NVMBASEDIR"/jpaxos.*
+rm -vrf "$NVMBASEDIR"/service.*
+
+### configure ###
+
+FILES='
+### replica
+../jpaxos_pmem/jpaxos.jar jpaxos.jar
+../jpaxos_pmem/jar_jniReplica.sh replica.sh
+../jpaxos_pmem/natives/jpaxos-pmem/build-debug/libjpaxos-pmem.so libjpaxos-pmem.so
+../jpaxos_pmem/natives/service/build-debug/libjpaxos-service.so libjpaxos-service.so
+service.conf
+### client
+cppHashMapClient.sh client.sh
+natives/tools/build-debug/hashMapClient hashMapClient
+### output parsing
+process.sh
+processClient.sh
+'
+
+BUILD="${BUILD:-no}"

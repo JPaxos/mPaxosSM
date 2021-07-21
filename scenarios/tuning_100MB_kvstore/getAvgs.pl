@@ -1,0 +1,1 @@
+../../../jpaxos/scenarios/tuning/getAvgs.pl

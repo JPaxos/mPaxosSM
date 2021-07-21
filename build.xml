@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project name="JPaxosNVM" default="jar" basedir=".">
+	<property name="sources" location="${basedir}/src" />
+	<property name="classes" location="${basedir}/bin" />
+	<property name="version" value="1.0" />
+	<property name="nativeHeaders.dir" location="${basedir}/natives/headers" />
+
+	<fail message="Ant 1.10 or newer required">
+		<condition>
+			<not><antversion atleast="1.10" /></not>
+		</condition>
+	</fail>
+	
+	<target name="clean">
+		<delete dir="${classes}" />
+	</target>
+
+	<target name="build">
+		<mkdir dir="${classes}" />
+		<javac srcdir="${sources}" destdir="${classes}" nativeheaderdir="${nativeHeaders.dir}" debug="on" debuglevel="lines,vars,source" includeantruntime="false">
+			<classpath>
+				<pathelement location="${classes}" />
+				<fileset dir="lib" includes="**/*.jar" />
+			</classpath>
+			<include name="**/*.java" />
+			<compilerarg value="-Xlint:deprecation" />
+		</javac>
+	</target>
+
+	<target name="jar" depends="build" description="Build a jar file with the library">
+		<jar destfile="jpaxos.jar" basedir="${classes}" />
+	</target>
+
+</project>

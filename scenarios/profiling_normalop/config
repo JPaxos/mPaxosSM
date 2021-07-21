@@ -1,0 +1,38 @@
+#!/bin/echo this file should be sourced: 
+
+# OpenSUSE ships with glibc and pmdk compiled with -fomit-frame-pointer, while
+# we need ones with -fno-omit-frame-pointer in order to get full backtrace from
+# within library calls. Hence manually compiled libraries are copied over.
+
+FILES='
+### replica
+../jpaxos_pmem/jpaxos.jar jpaxos.jar
+../jpaxos_pmem/jar_jniReplica-fp-ic.sh replica.sh
+../jpaxos_pmem/natives/jpaxos-pmem/build-release-fp-ggdb/libjpaxos-pmem.so libjpaxos-pmem.so
+../jpaxos_pmem/natives/service/build-release-fp-ggdb/libjpaxos-service.so libjpaxos-service.so
+../pmdk/1.9.2_fp_ggdb/nondebug/libpmemobj.so.1.0.0 libpmemobj.so.1
+../pmdk/1.9.2_fp_ggdb/nondebug/libpmem.so.1.0.0 libpmem.so.1
+service.conf
+### client
+cppHashMapClient.sh client.sh
+natives/tools/build-release/hashMapClient hashMapClient
+### logging
+scenarios/COMMON/logback-benchmark.xml logback.xml
+#scenarios/COMMON/logback-warn.xml logback.xml
+### output parsing 
+scenarios/COMMON/process.sh process.sh
+scenarios/COMMON/processClient.sh processClient.sh
+### pre/post test scripts
+scenarios/COMMON/postprocess.sh postprocess.sh
+scenarios/COMMON/preprocess.sh preprocess.sh
+### cpu and net stats
+natives/build/systemStats systemStats
+### profiling
+~/rpmbuild/BUILD/glibc-2.33/cc-base/nptl/libpthread.so libpthread.so.0
+~/rpmbuild/BUILD/glibc-2.33/cc-base/libc.so libc.so.6
+profile
+'
+
+BUILD="${BUILD:-no}"
+
+export TIMES='121 141 0 -1 0 -1'

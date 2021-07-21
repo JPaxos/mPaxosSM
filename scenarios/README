@@ -1,0 +1,4 @@
+Most scenarios use common files with JPaxos that can be found in: https://github.com/JPaxos/JPaxos/tree/master/scenarios/COMMON 
+
+The files are being looked for in ../jpaxos/scenarios/COMMON from the top level directory of mPaxosSM, so to run correctly one has to clone out JPaxos from https://github.com/JPaxos/JPaxos to the same directory where mPaxosSM is cloned.
+
